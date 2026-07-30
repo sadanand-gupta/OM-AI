@@ -4,7 +4,9 @@
       "Bash(xargs wc -l)",
       "Bash(flutter analyze lib/screens/home_screen.dart lib/screens/history_screen.dart lib/service/claude_service.dart lib/main.dart lib/widgets/custom_app_bar.dart)",
       "Bash(flutter analyze lib/)",
-      "Read(//c/Users/Admin/AppData/Local/Temp/claude/d--Starr-ai-app-New-APP-starr-ai/tasks/**)"
+      "Read(//c/Users/Admin/AppData/Local/Temp/claude/d--Starr-ai-app-New-APP-starr-ai/tasks/**)",
+      "Bash(python3 -c \":*)",
+      "Bash(flutter pub run flutter_launcher_icons)"
     ],
     "additionalDirectories": [
       "D:\\Starr_ai_app\\New_APP\\starr_ai\\.git"
