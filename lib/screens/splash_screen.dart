@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:om_ai/screens/home_screen.dart';
+import 'package:flutter/services.dart';
+import 'package:om_ai/screens/login_screen.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -11,44 +13,89 @@ class SplashScreen extends StatefulWidget {
 
 class _SplashScreenState extends State<SplashScreen>
     with TickerProviderStateMixin {
-  late AnimationController _rotationController;
-  late AnimationController _fadeController;
-  late Animation<double> _fadeAnimation;
+  // Logo scale + fade
+  late AnimationController _logoController;
+  late Animation<double> _logoScale;
+  late Animation<double> _logoFade;
 
-  final List<Map<String, String>> _features = [
-    {'icon': '🧠', 'text': 'AI-Powered Smart Analytics'},
-    {'icon': '💬', 'text': 'Instant Intelligent Answers'},
-    {'icon': '📊', 'text': 'Deep Data Insights'},
-    {'icon': '⚡', 'text': 'Real-Time AI Assistance'},
-  ];
+  // Title slide-up + fade
+  late AnimationController _titleController;
+  late Animation<double> _titleFade;
+  late Animation<Offset> _titleSlide;
+
+  // Shimmer ring around logo
+  late AnimationController _shimmerController;
+
+  // Bottom indicator pulse
+  late AnimationController _pulseController;
+  late Animation<double> _pulseAnimation;
 
   @override
   void initState() {
     super.initState();
 
-    _rotationController = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 6),
-    )..repeat();
+    // Immersive status bar for splash
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+      ),
+    );
 
-    _fadeController = AnimationController(
+    // Logo: scale from 0.6→1.0 + fade in over 800ms
+    _logoController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 900),
     );
-
-    _fadeAnimation = CurvedAnimation(
-      parent: _fadeController,
-      curve: Curves.easeIn,
+    _logoScale = Tween<double>(begin: 0.6, end: 1.0).animate(
+      CurvedAnimation(parent: _logoController, curve: Curves.easeOutBack),
+    );
+    _logoFade = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _logoController, curve: Curves.easeIn),
     );
 
-    _fadeController.forward();
+    // Title: fade + slide up after logo finishes
+    _titleController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 700),
+    );
+    _titleFade = Tween<double>(begin: 0.0, end: 1.0).animate(
+      CurvedAnimation(parent: _titleController, curve: Curves.easeOut),
+    );
+    _titleSlide = Tween<Offset>(
+      begin: const Offset(0, 0.3),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(parent: _titleController, curve: Curves.easeOutCubic),
+    );
 
+    // Shimmer ring: continuous slow rotation
+    _shimmerController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 4),
+    )..repeat();
+
+    // Bottom dot pulse
+    _pulseController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1200),
+    )..repeat(reverse: true);
+    _pulseAnimation = Tween<double>(begin: 0.3, end: 1.0).animate(
+      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
+    );
+
+    // Sequence: logo → title
+    _logoController.forward().then((_) {
+      _titleController.forward();
+    });
+
+    // Navigate after 3s
     Timer(const Duration(seconds: 3), () {
       if (mounted) {
         Navigator.of(context).pushReplacement(
           PageRouteBuilder(
-            transitionDuration: const Duration(milliseconds: 500),
-            pageBuilder: (_, __, ___) => HomeScreen(),
+            transitionDuration: const Duration(milliseconds: 600),
+            pageBuilder: (_, __, ___) => const LoginScreen(),
             transitionsBuilder: (_, anim, __, child) =>
                 FadeTransition(opacity: anim, child: child),
           ),
@@ -59,137 +106,210 @@ class _SplashScreenState extends State<SplashScreen>
 
   @override
   void dispose() {
-    _rotationController.dispose();
-    _fadeController.dispose();
+    _logoController.dispose();
+    _titleController.dispose();
+    _shimmerController.dispose();
+    _pulseController.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0D0D0D),
-      body: FadeTransition(
-        opacity: _fadeAnimation,
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFFF8FAFE), // very soft blue-white
+              Color(0xFFEEF2F9), // light periwinkle
+              Color(0xFFE4ECF7), // slightly deeper
+            ],
+            stops: [0.0, 0.5, 1.0],
+          ),
+        ),
         child: SafeArea(
           child: Column(
             children: [
-              const Spacer(flex: 2),
+              const Spacer(flex: 3),
 
-              // Rotating logo
-              RotationTransition(
-                turns: _rotationController,
-                child: ClipOval(
-                  child: Image.asset(
-                    'assets/images/Om_app_icon.webp',
-                    width: 100,
-                    height: 100,
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // App name
-              RichText(
-                text: const TextSpan(
-                  style: TextStyle(
-                    fontSize: 36,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.5,
-                  ),
-                  children: [
-                    TextSpan(
-                      text: 'OM ',
-                      style: TextStyle(color: Colors.white),
+              // --- Animated logo with shimmer ring ---
+              AnimatedBuilder(
+                animation: _logoController,
+                builder: (context, child) {
+                  return FadeTransition(
+                    opacity: _logoFade,
+                    child: ScaleTransition(
+                      scale: _logoScale,
+                      child: _buildLogoWithRing(),
                     ),
-                    TextSpan(
-                      text: 'AI',
-                      style: TextStyle(color: Color(0xFF4CAF50)),
-                    ),
-                  ],
-                ),
+                  );
+                },
               ),
 
-              const SizedBox(height: 8),
+              const SizedBox(height: 36),
 
-              Text(
-                'Your AI for Smart Analytics',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.white.withValues(alpha: 0.5),
-                  letterSpacing: 0.5,
-                ),
-              ),
-
-              const Spacer(flex: 2),
-
-              // Feature chips
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: Column(
-                  children: _features
-                      .map((f) => _FeatureTile(icon: f['icon']!, text: f['text']!))
-                      .toList(),
-                ),
-              ),
-
-              const Spacer(flex: 1),
-
-              // Bottom loading bar
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 48),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: LinearProgressIndicator(
-                    backgroundColor: Colors.white.withValues(alpha: 0.08),
-                    valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFF4CAF50)),
-                    minHeight: 3,
+              // --- App name + tagline ---
+              SlideTransition(
+                position: _titleSlide,
+                child: FadeTransition(
+                  opacity: _titleFade,
+                  child: Column(
+                    children: [
+                      RichText(
+                        text: const TextSpan(
+                          style: TextStyle(
+                            fontSize: 34,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 2.0,
+                          ),
+                          children: [
+                            TextSpan(
+                              text: 'OM ',
+                              style: TextStyle(color: Color(0xFF2C3E50)),
+                            ),
+                            TextSpan(
+                              text: 'AI',
+                              style: TextStyle(color: Color(0xFF16A085)),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        'Smart Analytics',
+                        style: TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                          color: const Color(0xFF2C3E50).withValues(alpha: 0.45),
+                          letterSpacing: 3.0,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
 
-              const SizedBox(height: 32),
+              const Spacer(flex: 4),
+
+              // --- Bottom pulse indicator ---
+              FadeTransition(
+                opacity: _pulseAnimation,
+                child: Container(
+                  width: 6,
+                  height: 6,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF16A085),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 40),
             ],
           ),
         ),
       ),
     );
   }
-}
 
-class _FeatureTile extends StatelessWidget {
-  final String icon;
-  final String text;
-
-  const _FeatureTile({required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.08),
-        ),
-      ),
-      child: Row(
+  Widget _buildLogoWithRing() {
+    return SizedBox(
+      width: 140,
+      height: 140,
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          Text(icon, style: const TextStyle(fontSize: 20)),
-          const SizedBox(width: 14),
-          Text(
-            text,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w500,
-              color: Colors.white.withValues(alpha: 0.85),
+          // Rotating shimmer ring
+          AnimatedBuilder(
+            animation: _shimmerController,
+            builder: (context, child) {
+              return CustomPaint(
+                size: const Size(140, 140),
+                painter: _ShimmerRingPainter(
+                  progress: _shimmerController.value,
+                ),
+              );
+            },
+          ),
+          // Logo
+          Container(
+            width: 100,
+            height: 100,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                  color: const Color(0xFF16A085).withValues(alpha: 0.12),
+                  blurRadius: 30,
+                  spreadRadius: 2,
+                ),
+                BoxShadow(
+                  color: const Color(0xFF1E5DEF).withValues(alpha: 0.06),
+                  blurRadius: 50,
+                  spreadRadius: 5,
+                ),
+              ],
+            ),
+            child: ClipOval(
+              child: Image.asset(
+                'assets/images/Om_app_icon.webp',
+                width: 100,
+                height: 100,
+                fit: BoxFit.cover,
+              ),
             ),
           ),
         ],
       ),
     );
   }
+}
+
+/// Draws a subtle gradient arc that rotates around the logo
+class _ShimmerRingPainter extends CustomPainter {
+  final double progress;
+
+  _ShimmerRingPainter({required this.progress});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = size.width / 2 - 4;
+
+    final sweepAngle = pi * 0.8;
+    final startAngle = 2 * pi * progress - pi / 2;
+
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8
+      ..strokeCap = StrokeCap.round
+      ..shader = SweepGradient(
+        startAngle: startAngle,
+        endAngle: startAngle + sweepAngle,
+        colors: [
+          const Color(0xFF16A085).withValues(alpha: 0.0),
+          const Color(0xFF16A085).withValues(alpha: 0.35),
+          const Color(0xFF1E5DEF).withValues(alpha: 0.2),
+          const Color(0xFF1E5DEF).withValues(alpha: 0.0),
+        ],
+        stops: const [0.0, 0.4, 0.7, 1.0],
+        transform: GradientRotation(startAngle),
+      ).createShader(Rect.fromCircle(center: center, radius: radius));
+
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      startAngle,
+      sweepAngle,
+      false,
+      paint,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _ShimmerRingPainter oldDelegate) =>
+      oldDelegate.progress != progress;
 }

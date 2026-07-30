@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'dart:math' show min;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:loading_animation_widget/loading_animation_widget.dart';
 import 'package:skeletonizer/skeletonizer.dart';
 import 'package:om_ai/constants/app_colors.dart';
@@ -30,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen>
   final ClaudeService _claudeService = ClaudeService();
   final List<ChatBubble> _messages = [];
   bool _isSendingMessage = false;
+  int _generationId = 0; // incremented on every send/cancel; stale responses are dropped
   final ScrollController _scrollController = ScrollController();
   late AnimationController _rotationController;
   bool _isTyping = false;
@@ -137,20 +139,38 @@ class _HomeScreenState extends State<HomeScreen>
     _inputController.clear();
     _inputFocusNode.unfocus();
 
+    // Increment generation so any previous stale response gets ignored
+    final myGeneration = ++_generationId;
+
     setState(() {
+      _isSendingMessage = true;
+      _isFromHistory = false;
       _messages.add(ChatBubble(
         message: text,
         isUser: true,
         timestamp: DateTime.now(),
       ));
-      _isSendingMessage = true;
-      _isFromHistory = false;
     });
 
     _scrollToBottom();
 
     final response = await _claudeService.sendMessage(text);
 
+    // If a cancel happened while we were awaiting, drop this response entirely
+    if (myGeneration != _generationId) return;
+
+    if (response.isCancelled) {
+      setState(() {
+        if (_messages.isNotEmpty && _messages.last.isUser) {
+          _messages.removeLast();
+        }
+        _isSendingMessage = false;
+      });
+      return;
+    }
+
+    // For errors: no animation plays, so set false immediately.
+    // For normal responses: onFullyDone callback sets false after animation ends.
     setState(() {
       _messages.add(ChatBubble(
         message: response.text,
@@ -158,7 +178,7 @@ class _HomeScreenState extends State<HomeScreen>
         timestamp: DateTime.now(),
         isError: response.isError,
       ));
-      _isSendingMessage = false;
+      if (response.isError) _isSendingMessage = false;
     });
 
     _scrollToBottom();
@@ -291,24 +311,28 @@ class _HomeScreenState extends State<HomeScreen>
           ),
           const SizedBox(width: 8),
           GestureDetector(
-            onTap: _sendMessage,
+            onTap: _isSendingMessage
+                ? () {
+                    _claudeService.cancelMessage();
+                    setState(() {
+                      _generationId++; // invalidate any in-flight response
+                      _isSendingMessage = false;
+                      // remove the optimistic user bubble
+                      if (_messages.isNotEmpty && _messages.last.isUser) {
+                        _messages.removeLast();
+                      }
+                    });
+                  }
+                : _sendMessage,
             child: Container(
               width: 44,
               height: 44,
               decoration: BoxDecoration(
-                color: _isSendingMessage
-                    ? Colors.grey.shade400
-                    : Colors.grey.shade800,
+                color: Colors.grey.shade800,
                 shape: BoxShape.circle,
               ),
               child: _isSendingMessage
-                  ? const Padding(
-                      padding: EdgeInsets.all(10),
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
-                    )
+                  ? const Icon(Icons.stop_rounded, color: Colors.white, size: 22)
                   : const Icon(Icons.arrow_upward, color: Colors.white, size: 20),
             ),
           ),
@@ -393,8 +417,33 @@ class _HomeScreenState extends State<HomeScreen>
           bubble: bubble,
           isMostRecentBotMessage: isMostRecentBotMessage,
           onAnimationComplete: _scrollToBottom,
+          onFullyDone: isMostRecentBotMessage && !bubble.isUser
+              ? () => setState(() => _isSendingMessage = false)
+              : null,
+          onEdit: bubble.isUser ? () => _editMessage(bubble.message) : null,
+          onCopy: () => _copyMessage(context, bubble.message),
         );
       },
+    );
+  }
+
+  void _editMessage(String originalText) {
+    _inputController.text = originalText;
+    _inputController.selection = TextSelection.fromPosition(
+      TextPosition(offset: originalText.length),
+    );
+    _inputFocusNode.requestFocus();
+  }
+
+  void _copyMessage(BuildContext context, String text) {
+    Clipboard.setData(ClipboardData(text: text));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Copied to clipboard'),
+        duration: const Duration(seconds: 2),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
     );
   }
 
@@ -671,12 +720,18 @@ class AnimatedChatBubble extends StatefulWidget {
   final ChatBubble bubble;
   final bool isMostRecentBotMessage;
   final VoidCallback onAnimationComplete;
+  final VoidCallback? onFullyDone;
+  final VoidCallback? onEdit;
+  final VoidCallback? onCopy;
 
   const AnimatedChatBubble({
     Key? key,
     required this.bubble,
     required this.isMostRecentBotMessage,
     required this.onAnimationComplete,
+    this.onFullyDone,
+    this.onEdit,
+    this.onCopy,
   }) : super(key: key);
 
   @override
@@ -736,7 +791,10 @@ class _AnimatedChatBubbleState extends State<AnimatedChatBubble> {
 
   void _startChunkAnimation() {
     if (_currentChunkIndex >= _chunks.length) {
-      if (mounted) setState(() {});
+      if (mounted) {
+        setState(() {});
+        widget.onFullyDone?.call();
+      }
       return;
     }
 
@@ -826,42 +884,57 @@ class _AnimatedChatBubbleState extends State<AnimatedChatBubble> {
       return _buildStaticBubble(context, bubble);
     }
 
+    final bool animationDone = !_isAnimatingText && _currentChunkIndex >= _chunks.length;
+
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Align(
         alignment: Alignment.centerLeft,
-        child: Container(
-          constraints: BoxConstraints(
-              maxWidth: MediaQuery.of(context).size.width * 0.90),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              for (final chunk in _completedChunks)
-                chunk.isTable
-                    ? Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: buildSmartMessage(context, chunk.content),
-                      )
-                    : RichText(
-                        text: TextSpan(
-                          children: renderBold(chunk.content).children ??
-                              [renderBold(chunk.content)],
-                          style:
-                              TextStyle(color: AppColors.kDark, fontSize: 16, height: 1.4),
-                        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              constraints: BoxConstraints(
+                  maxWidth: MediaQuery.of(context).size.width * 0.90),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  for (final chunk in _completedChunks)
+                    chunk.isTable
+                        ? Padding(
+                            padding: const EdgeInsets.only(bottom: 8),
+                            child: buildSmartMessage(context, chunk.content),
+                          )
+                        : RichText(
+                            text: TextSpan(
+                              children: renderBold(chunk.content).children ??
+                                  [renderBold(chunk.content)],
+                              style: TextStyle(
+                                  color: AppColors.kDark, fontSize: 16, height: 1.4),
+                            ),
+                          ),
+                  if (_isAnimatingText && _currentlyAnimatingText.isNotEmpty)
+                    RichText(
+                      text: TextSpan(
+                        children: renderBold(_currentlyAnimatingText).children ??
+                            [renderBold(_currentlyAnimatingText)],
+                        style: TextStyle(
+                            color: AppColors.kDark, fontSize: 16, height: 1.4),
                       ),
-              if (_isAnimatingText && _currentlyAnimatingText.isNotEmpty)
-                RichText(
-                  text: TextSpan(
-                    children: renderBold(_currentlyAnimatingText).children ??
-                        [renderBold(_currentlyAnimatingText)],
-                    style: TextStyle(
-                        color: AppColors.kDark, fontSize: 16, height: 1.4),
-                  ),
-                ),
+                    ),
+                ],
+              ),
+            ),
+            if (animationDone && widget.onCopy != null) ...[
+              const SizedBox(height: 4),
+              _ActionIcon(
+                icon: Icons.copy_outlined,
+                tooltip: 'Copy',
+                onTap: widget.onCopy!,
+              ),
             ],
-          ),
+          ],
         ),
       ),
     );
@@ -869,25 +942,90 @@ class _AnimatedChatBubbleState extends State<AnimatedChatBubble> {
 
   Widget _buildStaticBubble(BuildContext context, ChatBubble bubble) {
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8.0),
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
       child: Align(
         alignment:
             bubble.isUser ? Alignment.centerRight : Alignment.centerLeft,
+        child: Column(
+          crossAxisAlignment: bubble.isUser
+              ? CrossAxisAlignment.end
+              : CrossAxisAlignment.start,
+          children: [
+            Container(
+              constraints: BoxConstraints(
+                maxWidth: MediaQuery.of(context).size.width *
+                    (bubble.isUser ? 0.75 : 0.90),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+              decoration: BoxDecoration(
+                color: bubble.isUser
+                    ? (bubble.isError
+                        ? Colors.red.shade100
+                        : const Color.fromARGB(255, 223, 222, 222))
+                    : const Color.fromARGB(0, 228, 227, 227),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: buildSmartMessage(context, bubble.message),
+            ),
+            const SizedBox(height: 4),
+            _buildBubbleActions(bubble),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBubbleActions(ChatBubble bubble) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (bubble.isUser && widget.onEdit != null)
+          _ActionIcon(
+            icon: Icons.edit_outlined,
+            tooltip: 'Edit',
+            onTap: widget.onEdit!,
+          ),
+        if (widget.onCopy != null) ...[
+          if (bubble.isUser && widget.onEdit != null)
+            const SizedBox(width: 4),
+          _ActionIcon(
+            icon: Icons.copy_outlined,
+            tooltip: 'Copy',
+            onTap: widget.onCopy!,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ── Action icon button (copy / edit) ─────────────────────────────────────────
+
+class _ActionIcon extends StatelessWidget {
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  const _ActionIcon({
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
         child: Container(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width *
-                (bubble.isUser ? 0.75 : 0.90),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 12),
+          padding: const EdgeInsets.all(5),
           decoration: BoxDecoration(
-            color: bubble.isUser
-                ? (bubble.isError
-                    ? Colors.red.shade100
-                    : const Color.fromARGB(255, 223, 222, 222))
-                : const Color.fromARGB(0, 228, 227, 227),
-            borderRadius: BorderRadius.circular(16),
+            color: Colors.grey.shade100,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: Colors.grey.shade300),
           ),
-          child: buildSmartMessage(context, bubble.message),
+          child: Icon(icon, size: 15, color: Colors.grey.shade600),
         ),
       ),
     );

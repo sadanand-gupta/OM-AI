@@ -1,13 +1,94 @@
+import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 import 'package:om_ai/config/secrets.dart';
+import 'package:om_ai/service/social_media_service.dart';
 
 const String _kClaudeApiKey = claudeApiKey;
-const String _kClaudeModel = 'claude-3-5-sonnet-20241022';
-const String _kAnthropicApiUrl = 'https://api.anthropic.com/v1/messages';
-const String _kAnthropicVersion = '2023-06-01';
+// OpenRouter model — free options: 'meta-llama/llama-3.1-8b-instruct:free'
+// Paid Claude via OpenRouter: 'anthropic/claude-haiku-4-5'
+const String _kClaudeModel = 'anthropic/claude-haiku-4-5';
+const String _kAnthropicApiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+
+const String _kSystemPrompt = '''
+You are OM AI, a highly capable, friendly, and detailed AI assistant — similar to ChatGPT.
+
+Guidelines:
+- Always give thorough, complete, and well-structured answers.
+- Use markdown formatting: headings (###), bullet points, numbered lists, bold (**text**), and code blocks where appropriate.
+- Break long answers into clear sections with headings.
+- When explaining concepts, give examples.
+- When asked about a person, topic, product, or place — provide full details: background, key facts, features, pros/cons, and any relevant context.
+- Never cut answers short. If the topic is complex, cover it fully.
+- Be conversational and helpful in tone.
+- If you don't know something, say so clearly — never make up facts.
+- When web content is provided in the message, analyze it thoroughly and summarize all key details.
+
+Social Media Analysis (when profile data is provided in the message):
+- Analyze the profile deeply: follower count, engagement potential, niche, content strategy.
+- Give actionable insights: what is working, what can be improved, growth tips.
+- Compare stats to typical benchmarks (e.g. follower/following ratio, posting frequency).
+- For Instagram: comment on bio quality, niche clarity, branding.
+- For LinkedIn: assess professional positioning, headline strength, skills relevance.
+- For Twitter/X: assess tweet frequency, follower quality, engagement style.
+- For YouTube: assess subscriber count, view-to-subscriber ratio, content consistency.
+- Always end with 3-5 concrete recommendations to grow or improve the profile.
+''';
+
+
+// Regex to find URLs in a message
+final RegExp _urlRegex = RegExp(
+  r'https?://[^\s]+',
+  caseSensitive: false,
+);
+
+/// Fetches a URL and returns plain text content (strips HTML tags).
+Future<String?> _fetchWebPage(String url) async {
+  try {
+    final response = await http.get(
+      Uri.parse(url),
+      headers: {
+        'User-Agent':
+            'Mozilla/5.0 (compatible; OM-AI-Bot/1.0)',
+        'Accept': 'text/html,application/xhtml+xml,text/plain',
+      },
+    ).timeout(const Duration(seconds: 15));
+
+    if (response.statusCode != 200) return null;
+
+    String body = response.body;
+
+    // Remove script and style blocks
+    body = body.replaceAll(RegExp(r'<script[^>]*>[\s\S]*?</script>', caseSensitive: false), '');
+    body = body.replaceAll(RegExp(r'<style[^>]*>[\s\S]*?</style>', caseSensitive: false), '');
+
+    // Strip all remaining HTML tags
+    body = body.replaceAll(RegExp(r'<[^>]+>'), ' ');
+
+    // Decode common HTML entities
+    body = body
+        .replaceAll('&amp;', '&')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&nbsp;', ' ');
+
+    // Collapse extra whitespace/newlines
+    body = body.replaceAll(RegExp(r'\s{2,}'), '\n').trim();
+
+    // Limit to ~6000 chars to stay within token budget
+    if (body.length > 6000) body = '${body.substring(0, 6000)}\n[content truncated]';
+
+    return body;
+  } catch (e) {
+    debugPrint('Web fetch error for $url: $e');
+    return null;
+  }
+}
 
 class ClaudeMessage {
   final String role; // "user" or "assistant"
@@ -66,50 +147,116 @@ class ClaudeSession {
 class ClaudeResponse {
   final String text;
   final bool isError;
+  final bool isCancelled;
 
-  ClaudeResponse({required this.text, this.isError = false});
+  ClaudeResponse({required this.text, this.isError = false, this.isCancelled = false});
 }
 
 class ClaudeService {
   String? currentSessionId;
   final List<ClaudeMessage> _sessionMessages = [];
+  http.Client? _activeClient; // closed on cancel to abort the request immediately
 
   static const String _sessionsKey = 'om_ai_sessions';
 
+  // ── Cancel the in-flight request — closes the HTTP client immediately ─────
+  void cancelMessage() {
+    _activeClient?.close();
+    _activeClient = null;
+  }
+
   // ── Send a message to Claude and get a response ──────────────────────────
   Future<ClaudeResponse> sendMessage(String userMessage) async {
+    // Close any previous in-flight client
+    _activeClient?.close();
+    _activeClient = null;
+
+    final buffer = StringBuffer(userMessage);
+    bool hasExtra = false;
+
+    // 1. Detect social media handles/URLs and fetch profile data
+    final social = SocialMediaDetector.detect(userMessage);
+    if (social != null) {
+      final profileData = await SocialMediaService.fetchProfile(
+          social.platform, social.handle);
+      if (profileData != null) {
+        if (!hasExtra) { buffer.writeln('\n\n--- Social Media Data Fetched ---'); hasExtra = true; }
+        buffer.writeln(profileData);
+      }
+    }
+
+    // 2. Detect plain URLs and fetch web content
+    final urls = _urlRegex.allMatches(userMessage).map((m) => m.group(0)!).toList();
+    if (urls.isNotEmpty) {
+      if (!hasExtra) { buffer.writeln('\n\n--- Web Content Fetched ---'); hasExtra = true; }
+      for (final url in urls) {
+        // Skip social media URLs already handled above
+        if (social != null &&
+            (url.contains('instagram.com') ||
+             url.contains('linkedin.com') ||
+             url.contains('twitter.com') ||
+             url.contains('x.com') ||
+             url.contains('youtube.com'))) continue;
+        final content = await _fetchWebPage(url);
+        if (content != null && content.isNotEmpty) {
+          buffer.writeln('\n[Content from $url]\n$content');
+        } else {
+          buffer.writeln('\n[Could not fetch content from $url]');
+        }
+      }
+    }
+
+    final String enrichedMessage = hasExtra ? buffer.toString() : userMessage;
+
     _sessionMessages.add(
       ClaudeMessage(
         role: 'user',
-        content: userMessage,
+        content: userMessage, // store original message in history
         timestamp: DateTime.now(),
       ),
     );
 
-    // Build messages payload (only role + content for API)
+    // Build messages payload — use enriched message only for the last (current) turn
     final apiMessages = _sessionMessages
+        .take(_sessionMessages.length - 1)
         .map((m) => {'role': m.role, 'content': m.content})
-        .toList();
+        .toList()
+      ..add({'role': 'user', 'content': enrichedMessage});
+
+    // Create a fresh client for this request — closing it aborts the request
+    final client = http.Client();
+    _activeClient = client;
 
     try {
-      final response = await http.post(
+      // OpenRouter uses OpenAI-compatible format with system message inside messages[]
+      final messagesWithSystem = [
+        {'role': 'system', 'content': _kSystemPrompt},
+        ...apiMessages,
+      ];
+
+      final response = await client.post(
         Uri.parse(_kAnthropicApiUrl),
         headers: {
           'Content-Type': 'application/json',
-          'x-api-key': _kClaudeApiKey,
-          'anthropic-version': _kAnthropicVersion,
+          'Authorization': 'Bearer $_kClaudeApiKey',
+          'HTTP-Referer': 'https://om-ai.app',
+          'X-Title': 'OM AI',
         },
         body: jsonEncode({
           'model': _kClaudeModel,
           'max_tokens': 4096,
-          'messages': apiMessages,
+          'messages': messagesWithSystem,
         }),
       );
 
+      client.close();
+      _activeClient = null;
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
+        // OpenRouter returns OpenAI format: choices[0].message.content
         final assistantText =
-            data['content']?[0]?['text'] ?? 'No response received.';
+            data['choices']?[0]?['message']?['content'] ?? 'No response received.';
 
         _sessionMessages.add(
           ClaudeMessage(
@@ -124,15 +271,28 @@ class ClaudeService {
 
         return ClaudeResponse(text: assistantText);
       } else {
-        final error = jsonDecode(response.body);
-        final errMsg =
-            error['error']?['message'] ??
-            'Request failed (${response.statusCode})';
-        // Remove the user message we already added since it failed
+        debugPrint('❌ API Error ${response.statusCode}: ${response.body}');
+        Map<String, dynamic> error = {};
+        try {
+          error = jsonDecode(response.body);
+        } catch (_) {}
+        final errMsg = error['error']?['message'] ??
+            'Request failed (${response.statusCode}): ${response.body}';
         _sessionMessages.removeLast();
         return ClaudeResponse(text: errMsg, isError: true);
       }
     } catch (e) {
+      _activeClient = null;
+      // When client.close() is called mid-request it throws a ClientException
+      // or SocketException — treat that as a user cancel
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('clientexception') ||
+          errStr.contains('connection closed') ||
+          errStr.contains('software caused') ||
+          errStr.contains('socketexception')) {
+        if (_sessionMessages.isNotEmpty) _sessionMessages.removeLast();
+        return ClaudeResponse(text: '', isCancelled: true);
+      }
       _sessionMessages.removeLast();
       return ClaudeResponse(text: 'Network error: $e', isError: true);
     }
