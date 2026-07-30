@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:om_ai/resources/st_colors.dart';
-import 'package:om_ai/screens/home_screen.dart';
+import 'package:om_ai/screens/splash_screen.dart';
 import 'package:flutter/services.dart';
 
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
@@ -29,7 +29,7 @@ class MyApp extends StatelessWidget {
       title: 'OM AI',
       theme: ThemeData(primaryColor: StColors.pageBackground),
       navigatorKey: navigatorKey,
-      home: HomeScreen(),
+      home: const SplashScreen(),
     );
   }
 }

@@ -2,12 +2,9 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+import 'package:om_ai/config/secrets.dart';
 
-// ─────────────────────────────────────────────
-//  REPLACE THIS WITH YOUR REAL KEY
-//  Get one at: https://console.anthropic.com
-// ─────────────────────────────────────────────
-const String _kClaudeApiKey = 'YOUR_CLAUDE_API_KEY_HERE';
+const String _kClaudeApiKey = claudeApiKey;
 const String _kClaudeModel = 'claude-3-5-sonnet-20241022';
 const String _kAnthropicApiUrl = 'https://api.anthropic.com/v1/messages';
 const String _kAnthropicVersion = '2023-06-01';
@@ -24,16 +21,16 @@ class ClaudeMessage {
   });
 
   Map<String, dynamic> toJson() => {
-        'role': role,
-        'content': content,
-        'timestamp': timestamp.toIso8601String(),
-      };
+    'role': role,
+    'content': content,
+    'timestamp': timestamp.toIso8601String(),
+  };
 
   factory ClaudeMessage.fromJson(Map<String, dynamic> json) => ClaudeMessage(
-        role: json['role'] ?? 'user',
-        content: json['content'] ?? '',
-        timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
-      );
+    role: json['role'] ?? 'user',
+    content: json['content'] ?? '',
+    timestamp: DateTime.tryParse(json['timestamp'] ?? '') ?? DateTime.now(),
+  );
 }
 
 class ClaudeSession {
@@ -50,20 +47,20 @@ class ClaudeSession {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'createdAt': createdAt.toIso8601String(),
-        'messages': messages.map((m) => m.toJson()).toList(),
-      };
+    'id': id,
+    'title': title,
+    'createdAt': createdAt.toIso8601String(),
+    'messages': messages.map((m) => m.toJson()).toList(),
+  };
 
   factory ClaudeSession.fromJson(Map<String, dynamic> json) => ClaudeSession(
-        id: json['id'] ?? '',
-        title: json['title'] ?? 'Untitled Chat',
-        createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
-        messages: (json['messages'] as List? ?? [])
-            .map((m) => ClaudeMessage.fromJson(m))
-            .toList(),
-      );
+    id: json['id'] ?? '',
+    title: json['title'] ?? 'Untitled Chat',
+    createdAt: DateTime.tryParse(json['createdAt'] ?? '') ?? DateTime.now(),
+    messages: (json['messages'] as List? ?? [])
+        .map((m) => ClaudeMessage.fromJson(m))
+        .toList(),
+  );
 }
 
 class ClaudeResponse {
@@ -128,7 +125,9 @@ class ClaudeService {
         return ClaudeResponse(text: assistantText);
       } else {
         final error = jsonDecode(response.body);
-        final errMsg = error['error']?['message'] ?? 'Request failed (${response.statusCode})';
+        final errMsg =
+            error['error']?['message'] ??
+            'Request failed (${response.statusCode})';
         // Remove the user message we already added since it failed
         _sessionMessages.removeLast();
         return ClaudeResponse(text: errMsg, isError: true);
