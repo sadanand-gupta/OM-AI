@@ -1,0 +1,16 @@
+<resources>
+
+    <!-- Launch screen theme -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <!-- Theme after app loads -->
+    <style name="NormalTheme" parent="@android:style/Theme.Light.NoTitleBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+
+    <!-- Define the background color used by adaptive launcher icon -->
+    <color name="ic_launcher_background">#ffffff</color>
+
+</resources>
